@@ -19,7 +19,7 @@ sig_derivative_v = np.vectorize(sig_derivative)
 
 def convert_board(board):
     symbols = str(board).split()
-    return np.array([convert[s] for s in symbols], dtype=np.float64)
+    return [convert[s] for s in symbols] # We're returning a CPU array to avoid too many H2D transfers
 
 
 # tanh, ReLU, tanh
@@ -38,34 +38,36 @@ biases = np.random.uniform(-0.2, 0.2, (6, 64))
 result = 1
 
 
-def eval(weights, biases, position):
+def eval(weights, biases, current_input_activation):
     """Return z_list, a_list, and final scalar output."""
-    x = convert_board(position)
+    x = current_input_activation # x will be updated through layers
     z_list, a_list = [], [x]
 
     for i in range(6):
-        z = x @ weights[i] + biases[i]  #
+        z = x @ weights[i] + biases[i]
         z_list.append(z)
-        x = non_linears[i % 2](z)
+        x = non_linears[i % 2](z) # x is updated here
         a_list.append(x)
 
-    y_hat = sigmoid(np.sum(x))  # scalar output
+    # x now holds the activations of the last layer
+    y_hat = sigmoid(np.sum(x))  # Use the final 'x'
     return z_list, a_list, y_hat
-
 
 
 def gradient():
     global weights
     global biases
     loss_list = []  # we will populate this inside the loop below
+    positions = []
+
     weight_grad_l = np.zeros_like(weights)
     bias_grad_l = np.zeros_like(biases)
 
     total_loss = 0.0
-    for position in game:
+    for i in game:
+        positions.append(convert_board(i))
+    for position in np.array(positions):
         z_list, s_list, input_v = eval(weights, biases, position)
-        loss = 0.5 * (input_v - result) ** 2
-        total_loss += loss
 
         delta_cur = input_v - result # Derivative of the loss function with respect to the given sum
         delta_cur *= sig_derivative(np.sum(s_list[-1]))  # chain rule through the sigmoid(sum)
@@ -85,6 +87,7 @@ def gradient():
 
 
 board = chess.Board()
+test_board = board.copy()
 turn = 1
 for j in range(100):
     turn = 1
@@ -99,21 +102,24 @@ for j in range(100):
             current_best_score_for_black = -float('inf')
 
         possible_moves = list(board.legal_moves)
-
+        test_board = board.copy()
+        possible_moves_full_cpu = []
         for i in possible_moves:
-            test_board = board.copy()
             test_board.push(i)
+            possible_moves_full_cpu.append(convert_board(test_board))
+            test_board = board.copy()
+        possible_moves_full_gpu = np.array(possible_moves_full_cpu)
 
-            value = list(eval(weights, biases, test_board))[-1]
-
+        for index, vector in enumerate(possible_moves_full_gpu):
+            value = list(eval(weights, biases, vector))[-1]
             if turn == 1:  # White's turn
                 if value < current_best_score_for_black:
                     current_best_score_for_black = value
-                    best_move = i
+                    best_move = possible_moves[index]
             else:  # Black's turn (turn == -1)
                 if value > current_best_score_for_black:
                     current_best_score_for_black = value
-                    best_move = i
+                    best_move = possible_moves[index]
         game.append(board.copy())
         board.push(best_move)
         turn = -turn  # Flip turn for the next player
@@ -132,29 +138,35 @@ for j in range(100):
     board = chess.Board()
     game.clear()
 
-turn = 1
 while not board.is_game_over():
-    print(board)
-    print(" ")
     best_move = None
-    if turn == 1:
+
+    if turn == 1:  # White's turn
+        # White wants to find a move that MINIMIZES Black's score
         current_best_score_for_black = float('inf')
-    else:
+    else:  # Black's turn (turn == -1)
+        # Black wants to find a move that MAXIMIZES Black's score
         current_best_score_for_black = -float('inf')
+
     possible_moves = list(board.legal_moves)
+    possible_moves_full_cpu = []
     for i in possible_moves:
-        test_board = board.copy()
         test_board.push(i)
-        value = list(eval(weights, biases, test_board))[-1]
+        possible_moves_full_cpu.append(convert_board(test_board))
+        test_board = board.copy()
+    possible_moves_full_gpu = np.array(possible_moves_full_cpu)
+
+    for index, vector in enumerate(possible_moves_full_gpu):
+        value = list(eval(weights, biases, vector))[-1]
         if turn == 1:  # White's turn
             if value < current_best_score_for_black:
                 current_best_score_for_black = value
-                best_move = i
+                best_move = possible_moves[index]
         else:  # Black's turn (turn == -1)
             if value > current_best_score_for_black:
                 current_best_score_for_black = value
-                best_move = i
+                best_move = possible_moves[index]
     game.append(board.copy())
     board.push(best_move)
-    turn = -turn
-result = board.result()
+    turn = -turn  # Flip turn for the next player
+game.append(board.copy())
